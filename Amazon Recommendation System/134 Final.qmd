@@ -1,0 +1,389 @@
+---
+title: "Final Project 134"
+author: "Fion, Jessica, Dulce, Yikai"
+date: "2025-02-27"
+format: 
+  html:
+    embed-resources: true
+editor: visual
+---
+
+# **Introduction to the Recommendation System Project**
+
+## Project Overview
+
+In this project, our group aims to develop a recommendation system using an Amazon dataset to enhance user experience by providing personalized product recommendations. With the vast amount of data available in e-commerce, recommendation systems play a crucial role in helping users discover relevant products efficiently. By leveraging machine learning techniques, we aim to build a model that predicts user preferences based on historical interactions and product attributes.
+
+## Data Description
+
+We obtain our data set on Kaggle. The data set contains **1,465** entries with **16 columns**, providing information about Amazon products, user reviews, and ratings. We are focusing on the variables required for content filtering, which are **category**, **user_id**, **product_name**, and **product_id**. These variables will help us analyze user preferences and product recommendations effectively. This data set provides valuable insights into consumer behavior, product popularity, and user preferences, making it an ideal choice for developing a recommendation system.
+
+## Methodology
+
+**Methodology Summary for Recommendation Systems**
+
+We use the two primary types of recommendation systems:
+
+1\. **Content-Based Filtering (Chosen for Our Project)**
+
+-   Content-based recommendation systems use product attributes to suggest similar items to users.
+
+-   Each product's features (e.g., category, price, description, and ratings) are transformed into numerical vectors.
+
+-   The similarity between items is computed using **sigmoid kernel similarity**, which measures how closely related two products are based on their feature vectors.
+
+-   The system recommends items that are most similar to those the user has interacted with.
+
+2\. **Collaborative Filtering**
+
+-   This method relies on user interactions (ratings, reviews) to find patterns among users or items.
+
+-   It can be **user-based**, where users with similar preferences are grouped together, or **item-based**, where products with similar rating patterns are recommended.
+
+-   **Cosine similarity** is used in this method to determine relationships between items.
+
+# Exploring Our Data
+
+```{r, message=F}
+library(tidyverse)
+library(dplyr)
+library(reticulate)
+library(tidytext)
+library(tm)
+library(wordcloud)
+library(ggplot2)
+library(igraph)
+library(ggraph)
+library(textdata)
+library(reshape2)
+library(word2vec)
+library(umap)
+library(plotly)
+library(kableExtra)
+
+# load the data set
+amazon <- read.csv("data/amazon.csv")
+```
+
+Looking at a summary of the dataset, we can see that many of the variables that should be numerical are encoded as character variables. Additionally, there are fortunately no missing values.
+
+```{r}
+summary(amazon)
+colSums(is.na(amazon))
+```
+
+We amend the variable issue by converting them to numeric columns and cleaning the out the strings and symbols, then confirming that there are still no missing values.
+
+```{r}
+# Mutate character variables into numeric
+amazon$discounted_price <- as.numeric(gsub("[^0-9.]", "", amazon$discounted_price))
+amazon$actual_price <- as.numeric(gsub("[^0-9.]", "", amazon$actual_price))
+amazon$discount_percentage <- as.numeric(gsub("[^0-9]", "", amazon$discount_percentage))
+amazon$rating_count <- as.numeric(gsub("[^0-9.]", "", amazon$rating_count))
+
+# Find non-numeric rating values
+print(amazon$rating[grepl("[^0-9.]", amazon$rating)])
+
+amazon <- amazon %>% 
+  filter(grepl("^[0-9.]", rating)) %>% 
+  filter(!is.na(rating_count)) %>% 
+  mutate(rating = as.numeric(rating))
+
+# Confirm no missing
+colSums(is.na(amazon))
+```
+
+As we can see, the summary now displays the proper variables as numeric, and shows their baseline statistics.
+
+```{r}
+summary(amazon)
+```
+
+## Visual EDA
+
+\<\<\<\<\<\<\< HEAD
+
+### Most common words in reivews:
+
+For this part, we will work with the review column of the data from our data set.
+
+We will achieve by using the NLP process, first step is to do some transformations and cleaning.
+
+```{r}
+# Select relevant columns and do some cleaning for nlp
+# Given that there is no missing value in our data
+amazon_review_title <- amazon %>%
+  select(review_title) %>%
+  mutate(review_title = tolower(review_title) %>% str_replace_all('[[:punct:]]', ''))
+
+# Tokenize the data into words
+amazon_tokens <- amazon_review_title %>%
+  unnest_tokens(word, review_title)
+
+# Remove stop words
+data("stop_words")
+
+amazon_clean <- amazon_tokens %>%
+  anti_join(stop_words, by = "word")
+```
+
+Now we can create a visualization of the most common words with our data.
+
+```{r}
+# Plot the most Common Words
+top_words <- amazon_clean %>%
+  count(word, sort = TRUE) %>%
+  head(20)
+
+ggplot(top_words, aes(x = reorder(word, n), y = n)) +
+  geom_col(fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Top 20 Most Common Words in Review Titles", x = "Words", y = "Frequency") +
+  theme_minimal()
+```
+
+Let's do the visualization in a more interesting way.
+
+```{r}
+# using wordcloud
+amazon_clean %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100, scale = c(4, 0.5), colors = brewer.pal(8, "Dark2")))
+```
+
+Here, we can easily find the most common words including "produce","quality", but sometimes for a recommender system this is not what we want. We need to focus more on the attitudes of customers hidden behind their reviews. In this case, we can use sentiment analysis to visualize.
+
+```{r,fig.width=7, fig.height=5}
+# Sentiment Analysis
+amazon_sentiment <- amazon_clean %>%
+  inner_join(get_sentiments("bing"), by = "word") %>%
+  count(word, sentiment, sort = TRUE)
+
+amazon_sentiment %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("tomato", "blue"), max.words = 100)
+
+# Most common Bigrams
+amazon_bigrams <- amazon_review_title %>%
+  unnest_tokens(bigram, review_title, token = "ngrams", n = 2) %>%
+  separate(bigram, into = c("word1", "word2"), sep = " ", remove = FALSE) %>%
+  filter(!word1 %in% stop_words$word, !word2 %in% stop_words$word)
+
+amazon_bigrams %>%
+  count(bigram, sort = TRUE) %>%
+  head(20) %>%
+  ggplot(aes(x = reorder(bigram, n), y = n)) +
+  geom_col(fill = "green") +
+  coord_flip() +
+  labs(title = "Top 20 Most Common Bigrams", x = "Bigrams", y = "Count")
+```
+
+Here we have more valuable words in the graph and from the most common 20 bigrams graph, we can claim that our data must contain more information about devices&accessories or people who buying devices&accessories tend to leave reviews.
+
+=======
+
+### Actual Price vs. Discount Percentage
+
+```{r}
+amazon_filtered <- amazon %>%
+  filter(!is.na(actual_price) & !is.na(discount_percentage))
+
+ggplot(amazon_filtered, aes(x = actual_price, y = discount_percentage)) +
+  geom_point(alpha = 0.5, color = "red") +
+  scale_x_log10(labels = scales::comma) +  # Log scale for better spacing
+  labs(title = "Price vs. Discount Percentage", 
+       x = "Actual Price (₹) (Log Scale)", 
+       y = "Discount (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate labels for clarity
+```
+
+Price vs. Discount Percentage graph shows the relationship between a product's actual price and the discount percentage it receives. Products at all price points receive discounts, but higher-priced products show more variation in discounts. Higher prices have more discount this suggests that expensive products often receive more discounts, likely to make them more attractive. While low prices have lower discounts indicating that cheaper items may already be priced competitively.
+
+=======
+
+### Rating vs. Actual Price
+
+```{r}
+ggplot(amazon, aes(x = actual_price, y = rating)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_smooth(method = "lm", color = "darkblue", se = FALSE) +
+  labs(title = "Rating vs Actual Price",
+       x = "Actual Price",
+       y = "Rating") +
+  theme_minimal()
+```
+
+In the first graph, we see the relationship between product ratings and actual prices. Although the overall correlation is weak, since many lower priced items span the entire range of ratings, it is notable that all products with ratings below 3 are found in the lower price segment. Moreover, apart from a few outliers, almost all products priced above \$30,000 have ratings above 4. This widespread distribution of lower priced products across various ratings confirms that there is no strong overall correlation..
+
+### Discount Percentage vs. Rating
+
+```{r}
+ggplot(amazon, aes(x = discount_percentage, y = rating)) +
+  geom_point(alpha = 0.5, color = "purple") +
+  geom_smooth(method = "lm", color = "purple4", se = FALSE) +
+  labs(title = "Discounted Percentage vs Rating",
+       x = "Discounted Percentage",
+       y = "Rating") +
+  theme_minimal()
+```
+
+This scatter plot visualizes the relationship between Discount Percentage (x-axis) and Product Rating (y-axis). The data represent individual products, while the trend line indicates a slight negative correlation—meaning that as discount percentages increase, ratings tend to decrease slightly. However, the trend is not very strong, as most ratings cluster around 4.0, regardless of discount level. This suggests that while higher discounts might be associated with slightly lower-rated products, the effect is minimal, and other factors likely influence product ratings more significantly.
+
+
+## Preparation for Recommender Systems
+
+Firstly, the category variable must be cleaned, as it is currently intelligible:
+
+```{r}
+remove <- c('[[:punct:]]',
+            '[[:symbol:]]'
+            ) %>%
+  paste(collapse = '|')
+amazon$category <- amazon$category %>% 
+  str_replace_all(remove, ' ') %>%
+  str_replace_all("([a-z])([A-Z])", "\\1 \\2") %>%
+  tolower() %>%
+  str_replace_all("\\s+", " ")
+```
+
+For the second system, a data frame is defined by users who have purchased multiple products, signifying that those products were bought together.
+
+```{r}
+amazon_user_index <- amazon %>% 
+  separate_rows(user_name, sep=",")
+user_counts <- amazon_user_index %>% 
+  count(user_name, name = "purchase_count") %>% 
+  filter(purchase_count > 1)
+amazon_multiple_purchases <- amazon_user_index %>% 
+  semi_join(user_counts, by = "user_name")
+```
+
+```{r}
+write.csv(amazon, file = "data/cleaned_amazon.csv", row.names = FALSE)
+write.csv(amazon_multiple_purchases, file = "data/amazon_multiple_purchases.csv", row.names = FALSE)
+write.csv(amazon_user_index, file = "data/amazon_user_index.csv", row.names = FALSE)
+write.csv(user_counts, file = "data/user_counts.csv", row.names = FALSE)
+```
+
+# Recommended Systems
+
+```{python}
+from scipy.sparse import csr_matrix
+from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics.pairwise import cosine_similarity
+import pandas as pd
+import numpy as np
+import re
+import warnings
+import random
+
+warnings.filterwarnings('ignore')
+amazon = pd.read_csv('data/cleaned_amazon.csv')
+multiple_purchases = pd.read_csv('data/amazon_multiple_purchases.csv')
+```
+
+## Content Based
+
+In **content-based filtering**, recommendations are made based on the features of the items themselves. Products are recommended to users based on their similarity to the items the user has shown interest in, using features like product category, description, etc. This recommender system is analyzing the similarity between products' categories (which are text-based features) and recommending products that are similar based on their category similarity. 
+
+```{python}
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+tfv = TfidfVectorizer(min_df=3, max_features=None, strip_accents="unicode", analyzer="word",
+                      token_pattern=r"\w{1,}", ngram_range=(1, 3), stop_words="english")
+
+rec_data = amazon.copy()
+rec_data.drop_duplicates(subset="product_id", keep="first", inplace=True)
+rec_data.reset_index(drop=True, inplace=True)
+
+category = rec_data["category"].astype(str)
+tfv_matrix = tfv.fit_transform(category)
+```
+
+The system is using **TF-IDF** (Term Frequency-Inverse Document Frequency) to process the category text data. The TfidfVectorizer is used to convert the textual data (in this case, the "category" variable of the products) into numerical vectors that represent the importance of each term in the category. These vectors capture the patterns of words used in different product categories, which helps in comparing their similarities.
+
+```{python}
+from sklearn.metrics.pairwise import sigmoid_kernel
+sig = sigmoid_kernel(tfv_matrix, tfv_matrix)
+rec_indices = pd.Series(rec_data.index, index = rec_data["product_name"]).drop_duplicates()
+```
+
+The **sigmoid kernel** is used to compute the similarity between these category vectors. The kernel measures the pairwise similarity between all items based on their category descriptions.
+
+```{python}
+def give_recommendation(product_name, sig = sig):
+    
+    idx = rec_indices[product_name]
+
+    sig_score = list(enumerate(sig[idx]))
+    sig_score = sorted(sig_score, key=lambda x: x[1], reverse=True)
+    sig_score = sig_score[1:11]
+    product_indices = [i[0] for i in sig_score]
+     
+    # Top 10 most similar products
+    rec_dic = {"No" : range(1,11), 
+               "Product Name" : amazon["product_name"].iloc[product_indices].values,
+               "Rating" : amazon["rating"].iloc[product_indices].values}
+    dataframe = pd.DataFrame(data = rec_dic)
+    dataframe.set_index("No", inplace = True)
+    
+    print(f"Recommendations for {product_name} buyers :\n")
+    
+    return dataframe.style.set_properties(**{"background-color": "white","color":"black","border": "1.5px  solid black"})
+```
+
+```{python}
+give_recommendation("Wayona Nylon Braided USB to Lightning Fast Charging and Data Sync Cable Compatible for iPhone 13, 12,11, X, 8, 7, 6, 5, iPad Air, Pro, Mini (3 FT Pack of 1, Grey)")
+```
+
+## Collaborative Filtering
+
+A **Collaborative Filtering** recommender system suggests items based on user-item interactions. It doesn't require information about the items themselves, but rather focuses on the patterns of **user behavior** and interactions. The following is an example of **Item Based Collaborative Filtering**, where recommendations are given based on items that are frequently bought together. 
+
+```{python}
+user_item_matrix = pd.crosstab(multiple_purchases['user_name'], multiple_purchases['product_name'])
+
+sparse_matrix = csr_matrix(user_item_matrix)
+item_similarity = cosine_similarity(user_item_matrix.T, dense_output=False)
+item_similarity_df = pd.DataFrame(item_similarity, 
+                                  index=user_item_matrix.columns, 
+                                  columns=user_item_matrix.columns)
+```
+
+Here, the **cosine similarity** between product purchase interactions (users and items) is used, which allows the system to measure how similarly products are being bought together. If two products are bought by many of the same users, they are considered similar.
+
+```{python}
+def get_similar_items(item, item_similarity_df, top_n=10):
+    if item not in item_similarity_df.index:
+        return f"Product '{item}' not found in the dataset."
+    similar_items = item_similarity_df[item].sort_values(ascending=False)[1:top_n+1]
+    rec_dic = {
+        "No": range(1, top_n+1),
+        "Product Name": similar_items.index.values,
+        "Similarity Score": similar_items.values
+    }
+    dataframe = pd.DataFrame(rec_dic)
+    dataframe.set_index("No", inplace=True)
+
+    print(f"Recommendations for {item} buyers:\n")
+    
+    return dataframe.style.set_properties(**{"background-color": "white","color":"black","border": "1.5px  solid black"})
+```
+
+```{python}
+get_similar_items('Wayona Nylon Braided USB Data Sync and Fast Charging 3A Short Power Bank Cable For iPhones, iPad Air, iPad mini, iPod Nano and iPod Touch (Grey)', item_similarity_df, top_n=10)
+```
+
+=======
+
+# **Conclusion**
+
+In conclusion, through this project we have successfully developed a recommendation system using an Amazon dataset. We were able to use machine learning to ultimately enhance user experience in the ecommerce market. We implemented both content-based filtering and collaborative filtering to recommend products based on product features and user behavior.
+
+Through content based filtering, we leverage the TF-IDF vectorization and sigmoid kernel similarity to recommend products based on textual attributes like categories and description. This method proved effective in identifying similar items to ensure personalized recommendations for users who have interacted with specific products.
+Similarly, through collaborative filtering, we analyzed user-item interactions and applied social similarity to find relationships between products frequently purchased together. Through this filtering we are also able to suggest items that align with past behaviors, making recommendations more dynamic and responsive to customer trends as they change. 
+
+Moreover, our exploratory data analysis gave us a deeper inside onto pricing, discount patterns, and sentiment analysis in product reviews. This all helped us understand strong factors and correlations that influence user decisions. 
+
+Overall, our recommendation system provides a foundation for strengthening product relationships in the e-commerce market. This project highlights the significance of data-driven personalization in modern digital marketplaces while also highlighting the impact of machine learning in improving online shopping experiences.
